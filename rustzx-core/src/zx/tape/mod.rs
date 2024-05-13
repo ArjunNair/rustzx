@@ -1,8 +1,10 @@
 mod empty;
 mod tap;
+mod tzx;
 
 pub use empty::Empty;
 pub use tap::Tap;
+pub use tzx::Tzx;
 
 use crate::{
     host::{LoadableAsset, SeekableAsset},
@@ -15,6 +17,7 @@ use enum_dispatch::enum_dispatch;
 #[enum_dispatch(TapeImpl)]
 pub enum ZXTape<A: LoadableAsset + SeekableAsset> {
     Tap(Tap<A>),
+    Tzx(Tzx<A>),
     Empty(Empty),
 }
 
