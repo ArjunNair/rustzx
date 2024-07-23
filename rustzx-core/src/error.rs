@@ -35,6 +35,8 @@ pub enum RomLoadError {
 pub enum TapeLoadError {
     /// Provided tap file is invalid
     InvalidTapFile,
+    /// Provided tzx file is invalid
+    InvalidTzxFile,
 }
 
 #[derive(Debug, Display)]
