@@ -522,6 +522,13 @@ impl<H: Host> Z80Bus for ZXController<H> {
             if !self.tape.current_bit() {
                 tmp ^= 0x40;
             }
+
+            #[cfg(feature = "sound")]
+            {
+                let mic = tmp & 0x08 != 0;
+                let ear = tmp & 0x10 != 0;
+                self.mixer.beeper.change_state(ear, mic);
+            }
             // 5 and 7 bits are unused
             tmp
         } else if self.mouse.is_some() && (port & 0x0121 == 0x0001) {
