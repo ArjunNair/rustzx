@@ -5,7 +5,7 @@ use crate::{
     Result,
 };
 use core::str::from_utf8;
-use std::{mem::size_of, println};
+use std::println;
 
 const STD_PILOT_LENGTH: usize = 2168;
 const STD_PILOT_PULSES_HEADER: usize = 8063;
@@ -36,7 +36,7 @@ enum TapeState {
 }
 
 // Tzx block id's are in hex
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TzxBlockId {
     StandardSpeedData = 0x10,
     TurboSpeedData = 0x11,
@@ -106,7 +106,6 @@ pub struct Tzx<A: LoadableAsset + SeekableAsset> {
     buffer: [u8; BUFFER_SIZE],
     buffer_offset: usize,
     block_bytes_read: usize,
-    previous_block_id: Option<TzxBlockId>,
     current_block_id: Option<TzxBlockId>,
     current_block_size: Option<usize>,
     tape_ended: bool,
@@ -114,11 +113,11 @@ pub struct Tzx<A: LoadableAsset + SeekableAsset> {
     curr_bit: bool,
     curr_byte: u8,
     delay: usize,
-    pause_after_block: u16,
-    is_processing_data_block: bool,
     tape_timings: TapeTimings,
     used_bits_in_last_byte: usize,
     bits_to_process_in_byte: usize,
+    loop_start_marker: usize,
+    num_repetitions: Option<u16>,
 }
 
 impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
@@ -131,31 +130,38 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
             buffer: [0u8; BUFFER_SIZE],
             buffer_offset: 0,
             block_bytes_read: 0,
-            previous_block_id: None,
             current_block_id: None,
             current_block_size: None,
             delay: 0,
             asset,
             tape_ended: false,
-            pause_after_block: 0,
-            is_processing_data_block: false,
             tape_timings: TapeTimings::default(),
             used_bits_in_last_byte: 8,
             bits_to_process_in_byte: 0,
+            loop_start_marker: 0,
+            num_repetitions: None,
         };
         Ok(tzx)
     }
 
-    fn dump_tape_timings_info(&self, block_size: usize) {
+    fn dump_pilot_pulse_info(&self) {
         println!("\tPilot length: {}", self.tape_timings.pilot_length);
-        println!("\tSync1 length: {}", self.tape_timings.sync1_length);
-        println!("\tSync2 length: {}", self.tape_timings.sync2_length);
-        println!("\tBit 0 length: {}", self.tape_timings.bit_0_length);
-        println!("\tBit 1 length: {}", self.tape_timings.bit_1_length);
         println!(
             "\tPilot tone length: {:?}",
             self.tape_timings.pilot_tone_length
         );
+    }
+
+    fn dump_bit_pulse_info(&self) {
+        println!("\tBit 0 length: {}", self.tape_timings.bit_0_length);
+        println!("\tBit 1 length: {}", self.tape_timings.bit_1_length);
+    }
+
+    fn dump_tape_timings_info(&self, block_size: usize) {
+        self.dump_pilot_pulse_info();
+        println!("\tSync1 length: {}", self.tape_timings.sync1_length);
+        println!("\tSync2 length: {}", self.tape_timings.sync2_length);
+        self.dump_bit_pulse_info();
         println!(
             "\tPilot header length: {}",
             self.tape_timings.pilot_pulses_header
@@ -172,9 +178,60 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
             );
         }
     }
+}
 
-    fn next_tzx_block(&mut self) -> Result<bool> {
-        println!("Next TZX block");
+impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
+    fn can_fast_load(&self) -> bool {
+        false
+        //self.state == TapeState::Stop
+    }
+
+    fn next_block_byte(&mut self) -> Result<Option<u8>> {
+        if self.tape_ended {
+            return Ok(None);
+        }
+
+        if let Some(block_size) = self.current_block_size {
+            if self.block_bytes_read >= block_size {
+                return Ok(None);
+            }
+
+            let mut buffer_read_pos = self.block_bytes_read - self.buffer_offset;
+
+            // Read new buffer if required
+            if buffer_read_pos >= BUFFER_SIZE {
+                let bytes_to_read =
+                    (block_size - self.buffer_offset - BUFFER_SIZE).min(BUFFER_SIZE);
+                self.asset.read_exact(&mut self.buffer[0..bytes_to_read])?;
+                self.buffer_offset += BUFFER_SIZE;
+                buffer_read_pos = 0;
+            }
+
+            // Check last byte in block
+            if self.block_bytes_read >= block_size {
+                self.current_block_size = None;
+                self.block_bytes_read = 0;
+                return Ok(None);
+            }
+
+            // Perform actual read and advance position
+            let result = self.buffer[buffer_read_pos];
+            self.block_bytes_read += 1;
+
+            if self.block_bytes_read >= block_size {
+                self.bits_to_process_in_byte = self.used_bits_in_last_byte;
+                //println!("\tBits to process: {}", self.bits_to_process_in_byte);
+            } else {
+                self.bits_to_process_in_byte = 8;
+            }
+            return Ok(Some(result));
+        }
+
+        Ok(None)
+    }
+
+    fn next_block(&mut self) -> Result<bool> {
+        //println!("Next TZX block");
         if self.tape_ended {
             return Ok(false);
         }
@@ -189,7 +246,6 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
         self.buffer_offset = 0;
         self.block_bytes_read = 0;
         print!("Block {0:0x}: ", block_id);
-
         match block_id {
             0x10 => {
                 println!("Standard speed data block");
@@ -259,7 +315,7 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                 self.tape_timings.pilot_tone_length =
                     Some(u16::from_le_bytes([block_header[2], block_header[3]]) as usize);
 
-                self.dump_tape_timings_info(0);
+                self.dump_pilot_pulse_info();
                 self.current_block_id = Some(TzxBlockId::PureTone);
                 return Ok(true);
             }
@@ -271,6 +327,10 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                     return Ok(false);
                 }
                 self.tape_timings.pilot_tone_length = Some(block_header[0] as usize);
+                println!(
+                    "\tPilot tone length: {:?}",
+                    self.tape_timings.pilot_tone_length
+                );
                 let block_size = (block_header[0] as usize) * 2;
                 self.dump_tape_timings_info(block_size);
                 let block_bytes_to_read = block_size.min(BUFFER_SIZE);
@@ -298,15 +358,36 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                 let block_size =
                     u32::from_le_bytes([block_header[7], block_header[8], block_header[9], 0])
                         as usize;
-                self.dump_tape_timings_info(block_size);
+                self.dump_bit_pulse_info();
+                println!("\tPause length: {}", self.tape_timings.pause_length);
                 let block_bytes_to_read = block_size.min(BUFFER_SIZE);
                 self.asset
                     .read_exact(&mut self.buffer[0..block_bytes_to_read])?;
                 self.current_block_id = Some(TzxBlockId::PureDataBlock);
                 self.current_block_size = Some(block_size);
             }
+            0x18 => {
+                println!("CSW Recording - Skipping.");
+                let mut block_header = [0u8; 4];
+                if self.asset.read_exact(&mut block_header).is_err() {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                let block_size = u32::from_le_bytes(block_header) as usize;
+                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
+                if self
+                    .asset
+                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
+                    .is_err()
+                {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                self.current_block_id = Some(TzxBlockId::CswRecording);
+                return Ok(true);
+            }
             0x19 | 0x16 | 0x17 | 0x34 | 0x35 | 0x40 => {
-                println!("Ignoring deprecated block.")
+                println!("Ignoring deprecated block.");
             }
             0x20 => {
                 println!("Pause or Stop command");
@@ -315,7 +396,8 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let val = u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
+                let val = u16::from_le_bytes(block_header) as usize;
+                println!("\tPause length: {val}");
                 // Stop tape
                 if val == 0 {
                     self.delay = 0;
@@ -325,6 +407,79 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                 self.buffer[0] = block_header[0];
                 self.buffer[1] = block_header[1];
                 self.current_block_id = Some(TzxBlockId::PauseOrSilence);
+                return Ok(true);
+            }
+            0x21 => {
+                println!("Group start");
+                let mut block_header = [0u8; 1];
+                if self.asset.read_exact(&mut block_header).is_err() {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                let num_chars = block_header[0];
+                if self
+                    .asset
+                    .read_exact(&mut self.buffer[0..num_chars as usize])
+                    .is_err()
+                {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                let text_desc_bytes = &self.buffer[0..num_chars as usize];
+                let text_desc_str = from_utf8(text_desc_bytes).unwrap();
+                println!("\t{text_desc_str}");
+                self.current_block_id = Some(TzxBlockId::GroupStart);
+                return Ok(true);
+            }
+            0x22 => {
+                println!("Group end");
+                self.current_block_id = Some(TzxBlockId::GroupEnd);
+                return Ok(true);
+            }
+            0x24 => {
+                println!("Loop start");
+                let mut block_header = [0u8; 2];
+                if self.asset.read_exact(&mut block_header).is_err() {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                self.num_repetitions = Some(u16::from_le_bytes(block_header));
+                println!("\tNum iterations: {:?}", self.num_repetitions);
+                self.loop_start_marker = self.asset.seek(SeekFrom::Current(0))?;
+            }
+            0x25 => {
+                println!("Loop end");
+                self.current_block_id = Some(TzxBlockId::LoopEnd);
+                if let Some(mut num_rep) = self.num_repetitions {
+                    println!("\tRepetitions left: {num_rep}");
+                    if num_rep > 0 {
+                        num_rep -= 1;
+                        self.num_repetitions = Some(num_rep);
+                        self.asset.seek(SeekFrom::Start(self.loop_start_marker))?;
+                        return Ok(true);
+                    }
+                }
+                self.num_repetitions = None;
+                return Ok(true);
+            }
+            0x28 => {
+                println!("Select block");
+                let mut block_header = [0u8; 2];
+                if self.asset.read_exact(&mut block_header).is_err() {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                let block_size = u16::from_le_bytes(block_header) as usize;
+                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
+                if self
+                    .asset
+                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
+                    .is_err()
+                {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                self.current_block_id = Some(TzxBlockId::SelectBlock);
                 return Ok(true);
             }
             0x30 => {
@@ -357,7 +512,7 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let block_size = u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
+                let block_size = u16::from_le_bytes(block_header) as usize;
                 println!("\tBlock_size: {}", block_size);
                 let block_bytes_to_read = block_size.min(BUFFER_SIZE);
                 self.asset
@@ -372,76 +527,6 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
             }
         }
 
-        Ok(true)
-    }
-}
-
-impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
-    fn can_fast_load(&self) -> bool {
-        false
-        //self.state == TapeState::Stop
-    }
-
-    fn next_block_byte(&mut self) -> Result<Option<u8>> {
-        if self.tape_ended {
-            return Ok(None);
-        }
-
-        if let Some(block_size) = self.current_block_size {
-            if self.block_bytes_read >= block_size {
-                return Ok(None);
-            }
-
-            let mut buffer_read_pos = self.block_bytes_read - self.buffer_offset;
-
-            // Read new buffer if required
-            if buffer_read_pos >= BUFFER_SIZE {
-                let bytes_to_read =
-                    (block_size - self.buffer_offset - BUFFER_SIZE).min(BUFFER_SIZE);
-                self.asset.read_exact(&mut self.buffer[0..bytes_to_read])?;
-                self.buffer_offset += BUFFER_SIZE;
-                buffer_read_pos = 0;
-            }
-
-            // Check last byte in block
-            if self.block_bytes_read >= block_size {
-                self.current_block_size = None;
-                self.block_bytes_read = 0;
-                return Ok(None);
-            }
-
-            // Perform actual read and advance position
-            let result = self.buffer[buffer_read_pos];
-            self.block_bytes_read += 1;
-            return Ok(Some(result));
-        }
-
-        Ok(None)
-    }
-
-    fn next_block(&mut self) -> Result<bool> {
-        if self.tape_ended {
-            return Ok(false);
-        }
-
-        if self.is_processing_data_block {
-            // Skip leftovers from the previous block
-            while self.next_block_byte()?.is_some() {}
-
-            let mut block_size_buffer = [0u8; 2];
-            if self.asset.read_exact(&mut block_size_buffer).is_err() {
-                self.tape_ended = true;
-                return Ok(false);
-            }
-            let block_size = u16::from_le_bytes(block_size_buffer) as usize;
-            let block_bytes_to_read = block_size.min(BUFFER_SIZE);
-            self.asset
-                .read_exact(&mut self.buffer[0..block_bytes_to_read])?;
-
-            self.buffer_offset = 0;
-            self.block_bytes_read = 0;
-            self.current_block_size = Some(block_size);
-        }
         Ok(true)
     }
 
@@ -498,106 +583,15 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     break 'state_machine;
                 }
                 TapeState::Play => {
-                    if !self.next_tzx_block()? {
+                    if !self.next_block()? {
                         self.state = TapeState::Stop;
                     } else {
                         self.state = TapeState::Process;
                     }
                 }
                 TapeState::Process => {
-                    if let Some(block_id) = &self.current_block_id {
-                        match block_id {
-                            TzxBlockId::StandardSpeedData => {
-                                let first_byte = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-
-                                // Select appropriate pulse count for Pilot sequence
-                                let pulses_left = if first_byte == 0x00 {
-                                    self.tape_timings.pilot_pulses_header
-                                    //STD_PILOT_PULSES_HEADER
-                                } else {
-                                    self.tape_timings.pilot_pulses_data
-                                    //STD_PILOT_PULSES_DATA
-                                };
-                                self.curr_byte = first_byte;
-                                self.curr_bit = true;
-                                self.delay = self.tape_timings.pilot_length; // STD_PILOT_LENGTH;
-                                self.state = TapeState::Pilot { pulses_left };
-                                break 'state_machine;
-                            }
-                            TzxBlockId::TurboSpeedData => {
-                                let first_byte = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-
-                                // Select appropriate pulse count for Pilot sequence
-                                let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
-                                self.curr_byte = first_byte;
-                                //self.curr_bit = true;
-                                self.delay = self.tape_timings.pilot_length;
-                                self.state = TapeState::Pilot { pulses_left };
-                                break 'state_machine;
-                            }
-                            TzxBlockId::PureTone => {
-                                let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
-                                //self.curr_bit = true;
-                                self.delay = self.tape_timings.pilot_length;
-                                self.state = TapeState::PureTone { pulses_left };
-                                break 'state_machine;
-                            }
-                            TzxBlockId::PulseSequence => {
-                                let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
-
-                                // Read 2 bytes for the pulse length
-                                let byte1 = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-                                let byte2 = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-
-                                self.delay = u16::from_le_bytes([byte1, byte2]) as usize;
-                                //self.curr_bit = true;
-                                self.state = TapeState::PulseSequence { pulses_left };
-                                break 'state_machine;
-                            }
-                            TzxBlockId::PureDataBlock => {
-                                let first_byte = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-
-                                self.curr_byte = first_byte;
-                                self.curr_bit = !self.curr_bit;
-                                self.delay = 0;
-                                self.state = TapeState::NextBit { mask: 0x80 };
-                                break 'state_machine;
-                            }
-                            TzxBlockId::PauseOrSilence => {
-                                let byte1 = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-                                let byte2 = self
-                                    .next_block_byte()?
-                                    .ok_or(TapeLoadError::InvalidTzxFile)?;
-
-                                let length = u16::from_le_bytes([byte1, byte2]) as usize;
-                                println!("\tSilence length: {}ms", length);
-                                // Finish off previous edge first
-                                self.curr_bit = !self.curr_bit;
-                                self.delay = 3_500;
-                                // Post that play "silence" for specified length
-                                self.state = TapeState::Silence { length };
-                                break 'state_machine;
-                            }
-                            _ => {
-                                //println!("\tSkipping block {:?}", block_id);
-                                // Skip all bytes in the block
-                                while self.next_block_byte()?.is_some() {}
-                                self.state = TapeState::Play;
-                                break 'state_machine;
-                            }
-                        }
+                    if self.process_current_block().is_ok() {
+                        break 'state_machine;
                     }
                 }
                 TapeState::Pilot { mut pulses_left } => {
@@ -652,15 +646,6 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 TapeState::NextByte => {
                     self.state = if let Some(byte) = self.next_block_byte()? {
                         self.curr_byte = byte;
-                        if let Some(block_size) = self.current_block_size {
-                            // This is the last byte in block
-                            if self.block_bytes_read >= block_size {
-                                self.bits_to_process_in_byte = self.used_bits_in_last_byte;
-                            }
-                        } else {
-                            self.bits_to_process_in_byte = 8;
-                        }
-
                         TapeState::NextBit { mask: 0x80 }
                     } else {
                         TapeState::Pause
@@ -668,6 +653,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 TapeState::NextBit { mask } => {
                     self.curr_bit = !self.curr_bit;
+
                     if (self.curr_byte & mask) == 0 {
                         self.delay = self.tape_timings.bit_0_length; // STD_BIT_ZERO_LENGTH;
                         self.state = TapeState::BitHalf {
@@ -681,6 +667,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                             mask,
                         };
                     };
+
                     break 'state_machine;
                 }
                 TapeState::BitHalf {
@@ -691,6 +678,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.delay = half_bit_delay;
                     mask >>= 1;
                     self.bits_to_process_in_byte -= 1;
+
                     self.state = if mask == 0 || self.bits_to_process_in_byte == 0 {
                         TapeState::NextByte
                     } else {
@@ -699,11 +687,12 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     break 'state_machine;
                 }
                 TapeState::Pause => {
-                    self.curr_bit = !self.curr_bit;
                     self.delay = self.tape_timings.pause_length * 3_500; // STD_PAUSE_LENGTH;
-                                                                         // Next block or end of the tape
                     self.state = TapeState::Play;
-                    break 'state_machine;
+                    self.curr_bit = !self.curr_bit;
+                    if self.delay > 0 {
+                        break 'state_machine;
+                    } // Next block or end of the tape
                 }
                 TapeState::Silence { length } => {
                     self.curr_bit = false;
@@ -714,6 +703,101 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
             }
         }
 
+        Ok(())
+    }
+
+    fn process_current_block(&mut self) -> Result<()> {
+        if let Some(block_id) = &self.current_block_id.clone() {
+            match block_id {
+                TzxBlockId::StandardSpeedData => {
+                    let first_byte = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+                    // Select appropriate pulse count for Pilot sequence
+                    let pulses_left = if first_byte == 0x00 {
+                        self.tape_timings.pilot_pulses_header
+                    } else {
+                        self.tape_timings.pilot_pulses_data
+                    };
+                    self.curr_byte = first_byte;
+                    self.delay = self.tape_timings.pilot_length;
+                    self.state = TapeState::Pilot { pulses_left };
+                }
+                TzxBlockId::TurboSpeedData => {
+                    let first_byte = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+
+                    // Select appropriate pulse count for Pilot sequence
+                    let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
+                    self.curr_byte = first_byte;
+                    self.delay = self.tape_timings.pilot_length;
+                    self.state = TapeState::Pilot { pulses_left };
+                }
+                TzxBlockId::PureTone => {
+                    let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
+                    //self.curr_bit = !self.curr_bit;
+                    self.delay = self.tape_timings.pilot_length;
+                    self.state = TapeState::PureTone { pulses_left };
+                }
+                TzxBlockId::PulseSequence => {
+                    let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
+
+                    // Read 2 bytes for the pulse length
+                    let byte1 = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+                    let byte2 = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+
+                    self.delay = u16::from_le_bytes([byte1, byte2]) as usize;
+                    self.state = TapeState::PulseSequence { pulses_left };
+                }
+                TzxBlockId::PureDataBlock => {
+                    let first_byte = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+                    self.curr_byte = first_byte;
+                    // Seem to need this flip for the block to load correctly.
+                    self.curr_bit = !self.curr_bit;
+                    self.state = TapeState::NextBit { mask: 0x80 };
+                }
+                TzxBlockId::PauseOrSilence => {
+                    let byte1 = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+                    let byte2 = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+
+                    let length = u16::from_le_bytes([byte1, byte2]) as usize;
+                    println!("\tSilence length: {}ms", length);
+                    // Finish off previous edge first
+                    self.delay = 3_500;
+                    // Post that play "silence" for specified length
+                    self.state = TapeState::Silence { length };
+                }
+                TzxBlockId::LoopEnd => {
+                    self.delay = 0;
+                    self.state = TapeState::Play;
+                }
+                TzxBlockId::GroupStart => {
+                    self.delay = 0;
+                    self.state = TapeState::Play;
+                }
+                TzxBlockId::GroupEnd => {
+                    self.delay = 0;
+                    self.state = TapeState::Play;
+                }
+                _ => {
+                    //println!("\tSkipping block {:?}", block_id);
+                    // Skip all bytes in the block
+                    while self.next_block_byte()?.is_some() {}
+                    self.state = TapeState::Play;
+                }
+            }
+        }
         Ok(())
     }
 

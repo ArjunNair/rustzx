@@ -38,6 +38,7 @@ pub trait TapeImpl {
     fn current_bit(&self) -> bool;
     /// Perform tape processing emulation within `clocks` time limit
     fn process_clocks(&mut self, clocks: usize) -> Result<()>;
+    fn process_current_block(&mut self) -> Result<()>;
     fn stop(&mut self);
     fn play(&mut self);
     /// Rewinds tape content to the beginning
