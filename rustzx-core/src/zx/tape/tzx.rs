@@ -28,8 +28,9 @@ enum TapeState {
     PureTone { pulses_left: usize },
     PulseSequence { pulses_left: usize },
     Sync,
-    NextByte,
+    NextByte { is_direct_recording_sample: bool },
     NextBit { mask: u8 },
+    NextDirectRecordingBit { mask: u8 },
     BitHalf { half_bit_delay: usize, mask: u8 },
     Pause,
     Silence { length: usize },
@@ -366,6 +367,37 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::PureDataBlock);
                 self.current_block_size = Some(block_size);
             }
+            0x15 => {
+                println!("Direct Recording Block");
+                let mut block_header = [0u8; 8];
+                if self.asset.read_exact(&mut block_header).is_err() {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                self.tape_timings.bit_0_length =
+                    u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
+                self.tape_timings.bit_1_length =
+                    u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
+                self.tape_timings.pause_length =
+                    u16::from_le_bytes([block_header[2], block_header[3]]) as usize;
+                self.used_bits_in_last_byte = block_header[4] as usize;
+                let block_size =
+                    u32::from_le_bytes([block_header[5], block_header[6], block_header[7], 0])
+                        as usize;
+                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
+                self.dump_tape_timings_info(block_size);
+                if self
+                    .asset
+                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
+                    .is_err()
+                {
+                    self.tape_ended = true;
+                    return Ok(false);
+                }
+                self.current_block_id = Some(TzxBlockId::DirectRecording);
+                self.current_block_size = Some(block_size);
+                return Ok(true);
+            }
             0x18 => {
                 println!("CSW Recording - Skipping.");
                 let mut block_header = [0u8; 4];
@@ -643,10 +675,16 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.state = TapeState::NextBit { mask: 0x80 };
                     break 'state_machine;
                 }
-                TapeState::NextByte => {
+                TapeState::NextByte {
+                    is_direct_recording_sample,
+                } => {
                     self.state = if let Some(byte) = self.next_block_byte()? {
                         self.curr_byte = byte;
-                        TapeState::NextBit { mask: 0x80 }
+                        if is_direct_recording_sample {
+                            TapeState::NextDirectRecordingBit { mask: 0x80 }
+                        } else {
+                            TapeState::NextBit { mask: 0x80 }
+                        }
                     } else {
                         TapeState::Pause
                     }
@@ -655,19 +693,39 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.curr_bit = !self.curr_bit;
 
                     if (self.curr_byte & mask) == 0 {
-                        self.delay = self.tape_timings.bit_0_length; // STD_BIT_ZERO_LENGTH;
+                        self.delay = self.tape_timings.bit_0_length;
                         self.state = TapeState::BitHalf {
-                            half_bit_delay: self.tape_timings.bit_0_length, //STD_BIT_ZERO_LENGTH,
+                            half_bit_delay: self.tape_timings.bit_0_length,
                             mask,
                         };
                     } else {
-                        self.delay = self.tape_timings.bit_1_length; //STD_BIT_ONE_LENGTH;
+                        self.delay = self.tape_timings.bit_1_length;
+
                         self.state = TapeState::BitHalf {
-                            half_bit_delay: self.tape_timings.bit_1_length, // STD_BIT_ONE_LENGTH,
+                            half_bit_delay: self.tape_timings.bit_1_length,
                             mask,
                         };
                     };
 
+                    break 'state_machine;
+                }
+                // Direct Recording sample processing
+                TapeState::NextDirectRecordingBit { mut mask } => {
+                    let bit = self.curr_byte & mask == 0;
+                    self.delay = self.tape_timings.bit_0_length;
+
+                    if bit != self.curr_bit {
+                        self.curr_bit = !self.curr_bit;
+                    }
+                    mask >>= 1;
+                    self.bits_to_process_in_byte -= 1;
+                    self.state = if mask == 0 || self.bits_to_process_in_byte == 0 {
+                        TapeState::NextByte {
+                            is_direct_recording_sample: true,
+                        }
+                    } else {
+                        TapeState::NextDirectRecordingBit { mask }
+                    };
                     break 'state_machine;
                 }
                 TapeState::BitHalf {
@@ -680,12 +738,15 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.bits_to_process_in_byte -= 1;
 
                     self.state = if mask == 0 || self.bits_to_process_in_byte == 0 {
-                        TapeState::NextByte
+                        TapeState::NextByte {
+                            is_direct_recording_sample: false,
+                        }
                     } else {
                         TapeState::NextBit { mask }
                     };
                     break 'state_machine;
                 }
+
                 TapeState::Pause => {
                     self.delay = self.tape_timings.pause_length * 3_500; // STD_PAUSE_LENGTH;
                     self.state = TapeState::Play;
@@ -733,6 +794,15 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.curr_byte = first_byte;
                     self.delay = self.tape_timings.pilot_length;
                     self.state = TapeState::Pilot { pulses_left };
+                }
+                TzxBlockId::DirectRecording => {
+                    let first_byte = self
+                        .next_block_byte()?
+                        .ok_or(TapeLoadError::InvalidTzxFile)?;
+                    println!("DR: {first_byte}");
+                    self.curr_byte = first_byte;
+                    self.curr_bit = !self.curr_bit;
+                    self.state = TapeState::NextDirectRecordingBit { mask: 0x80 };
                 }
                 TzxBlockId::PureTone => {
                     let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
