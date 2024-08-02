@@ -376,8 +376,6 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 self.tape_timings.bit_0_length =
                     u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
-                self.tape_timings.bit_1_length =
-                    u16::from_le_bytes([block_header[0], block_header[1]]) as usize;
                 self.tape_timings.pause_length =
                     u16::from_le_bytes([block_header[2], block_header[3]]) as usize;
                 self.used_bits_in_last_byte = block_header[4] as usize;
@@ -385,7 +383,14 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     u32::from_le_bytes([block_header[5], block_header[6], block_header[7], 0])
                         as usize;
                 let block_bytes_to_read = block_size.min(BUFFER_SIZE);
-                self.dump_tape_timings_info(block_size);
+                println!("\tNum t-states per sample: {}", {
+                    self.tape_timings.bit_0_length
+                });
+                println!("\tPause after block: {}", {
+                    self.tape_timings.pause_length
+                });
+                println!("\tBits in last byte: {}", self.used_bits_in_last_byte);
+                println!("\tBlock size: {}", block_size);
                 if self
                     .asset
                     .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
@@ -429,7 +434,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     return Ok(false);
                 }
                 let val = u16::from_le_bytes(block_header) as usize;
-                println!("\tPause length: {val}");
+                //println!("\tPause length: {val}");
                 // Stop tape
                 if val == 0 {
                     self.delay = 0;
@@ -756,7 +761,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     } // Next block or end of the tape
                 }
                 TapeState::Silence { length } => {
-                    self.curr_bit = false;
+                    self.curr_bit = !self.curr_bit;
                     self.delay = length * 3_500;
                     self.state = TapeState::Play;
                     break 'state_machine;
@@ -799,7 +804,6 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     let first_byte = self
                         .next_block_byte()?
                         .ok_or(TapeLoadError::InvalidTzxFile)?;
-                    println!("DR: {first_byte}");
                     self.curr_byte = first_byte;
                     self.curr_bit = !self.curr_bit;
                     self.state = TapeState::NextDirectRecordingBit { mask: 0x80 };
@@ -842,7 +846,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                         .ok_or(TapeLoadError::InvalidTzxFile)?;
 
                     let length = u16::from_le_bytes([byte1, byte2]) as usize;
-                    println!("\tSilence length: {}ms", length);
+                    println!("\tPause/Silence length: {}ms", length);
                     // Finish off previous edge first
                     self.delay = 3_500;
                     // Post that play "silence" for specified length
