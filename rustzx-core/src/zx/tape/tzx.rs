@@ -113,7 +113,7 @@ pub struct Tzx<A: LoadableAsset + SeekableAsset> {
     // Non-fastload related fields
     curr_bit: bool,
     curr_byte: u8,
-    delay: usize,
+    delay: isize,
     tape_timings: TapeTimings,
     used_bits_in_last_byte: usize,
     bits_to_process_in_byte: usize,
@@ -567,6 +567,9 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
         Ok(true)
     }
 
+    fn skip_block(&mut self, header_size: usize) -> Result<bool> {
+        Ok(true)
+    }
     fn current_bit(&self) -> bool {
         self.curr_bit
     }
@@ -577,12 +580,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
         }
 
         if self.delay > 0 {
-            if clocks > self.delay {
-                self.delay = 0;
-            } else {
-                self.delay -= clocks;
+            self.delay -= clocks as isize;
+            if self.delay > 0 {
+                return Ok(());
             }
-            return Ok(());
         }
 
         'state_machine: loop {
@@ -635,10 +636,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.curr_bit = !self.curr_bit;
                     pulses_left -= 1;
                     if pulses_left == 0 {
-                        self.delay = self.tape_timings.sync1_length; // STD_SYNC1_LENGTH;
+                        self.delay += self.tape_timings.sync1_length as isize;
                         self.state = TapeState::Sync;
                     } else {
-                        self.delay = self.tape_timings.pilot_length; // STD_PILOT_LENGTH;
+                        self.delay += self.tape_timings.pilot_length as isize;
                         self.state = TapeState::Pilot { pulses_left };
                     }
                     break 'state_machine;
@@ -649,7 +650,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     if pulses_left == 0 {
                         self.state = TapeState::Play;
                     } else {
-                        self.delay = self.tape_timings.pilot_length;
+                        self.delay += self.tape_timings.pilot_length as isize;
                         self.state = TapeState::PureTone { pulses_left };
                     }
                     break 'state_machine;
@@ -668,7 +669,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                             .next_block_byte()?
                             .ok_or(TapeLoadError::InvalidTzxFile)?;
 
-                        self.delay = u16::from_le_bytes([byte1, byte2]) as usize;
+                        self.delay += u16::from_le_bytes([byte1, byte2]) as isize;
                         println!("\tPulse length: {}", self.delay);
                         self.state = TapeState::PulseSequence { pulses_left };
                     }
@@ -676,7 +677,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 TapeState::Sync => {
                     self.curr_bit = !self.curr_bit;
-                    self.delay = self.tape_timings.sync2_length; // STD_SYNC2_LENGTH;
+                    self.delay += self.tape_timings.sync2_length as isize;
                     self.state = TapeState::NextBit { mask: 0x80 };
                     break 'state_machine;
                 }
@@ -698,13 +699,13 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.curr_bit = !self.curr_bit;
 
                     if (self.curr_byte & mask) == 0 {
-                        self.delay = self.tape_timings.bit_0_length;
+                        self.delay += self.tape_timings.bit_0_length as isize;
                         self.state = TapeState::BitHalf {
                             half_bit_delay: self.tape_timings.bit_0_length,
                             mask,
                         };
                     } else {
-                        self.delay = self.tape_timings.bit_1_length;
+                        self.delay += self.tape_timings.bit_1_length as isize;
 
                         self.state = TapeState::BitHalf {
                             half_bit_delay: self.tape_timings.bit_1_length,
@@ -717,7 +718,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 // Direct Recording sample processing
                 TapeState::NextDirectRecordingBit { mut mask } => {
                     let bit = self.curr_byte & mask == 0;
-                    self.delay = self.tape_timings.bit_0_length;
+                    self.delay += self.tape_timings.bit_0_length as isize;
 
                     if bit != self.curr_bit {
                         self.curr_bit = !self.curr_bit;
@@ -738,7 +739,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     mut mask,
                 } => {
                     self.curr_bit = !self.curr_bit;
-                    self.delay = half_bit_delay;
+                    self.delay += half_bit_delay as isize;
                     mask >>= 1;
                     self.bits_to_process_in_byte -= 1;
 
@@ -753,7 +754,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
 
                 TapeState::Pause => {
-                    self.delay = self.tape_timings.pause_length * 3_500; // STD_PAUSE_LENGTH;
+                    self.delay += (self.tape_timings.pause_length * 3_500) as isize;
                     self.state = TapeState::Play;
                     self.curr_bit = !self.curr_bit;
                     if self.delay > 0 {
@@ -762,7 +763,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 TapeState::Silence { length } => {
                     self.curr_bit = !self.curr_bit;
-                    self.delay = length * 3_500;
+                    self.delay += (length * 3_500) as isize;
                     self.state = TapeState::Play;
                     break 'state_machine;
                 }
@@ -786,7 +787,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                         self.tape_timings.pilot_pulses_data
                     };
                     self.curr_byte = first_byte;
-                    self.delay = self.tape_timings.pilot_length;
+                    self.delay += self.tape_timings.pilot_length as isize;
                     self.state = TapeState::Pilot { pulses_left };
                 }
                 TzxBlockId::TurboSpeedData => {
@@ -797,7 +798,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     // Select appropriate pulse count for Pilot sequence
                     let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
                     self.curr_byte = first_byte;
-                    self.delay = self.tape_timings.pilot_length;
+                    self.delay += self.tape_timings.pilot_length as isize;
                     self.state = TapeState::Pilot { pulses_left };
                 }
                 TzxBlockId::DirectRecording => {
@@ -811,7 +812,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 TzxBlockId::PureTone => {
                     let pulses_left = self.tape_timings.pilot_tone_length.unwrap();
                     //self.curr_bit = !self.curr_bit;
-                    self.delay = self.tape_timings.pilot_length;
+                    self.delay += self.tape_timings.pilot_length as isize;
                     self.state = TapeState::PureTone { pulses_left };
                 }
                 TzxBlockId::PulseSequence => {
@@ -825,7 +826,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                         .next_block_byte()?
                         .ok_or(TapeLoadError::InvalidTzxFile)?;
 
-                    self.delay = u16::from_le_bytes([byte1, byte2]) as usize;
+                    self.delay += u16::from_le_bytes([byte1, byte2]) as isize;
                     self.state = TapeState::PulseSequence { pulses_left };
                 }
                 TzxBlockId::PureDataBlock => {
@@ -848,7 +849,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     let length = u16::from_le_bytes([byte1, byte2]) as usize;
                     println!("\tPause/Silence length: {}ms", length);
                     // Finish off previous edge first
-                    self.delay = 3_500;
+                    self.delay += 3_500;
                     // Post that play "silence" for specified length
                     self.state = TapeState::Silence { length };
                 }

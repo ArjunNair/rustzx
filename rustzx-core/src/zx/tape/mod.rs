@@ -34,6 +34,8 @@ pub trait TapeImpl {
     fn next_block_byte(&mut self) -> Result<Option<u8>>;
     /// Loads next block. Returns false if end of the tape is reached
     fn next_block(&mut self) -> Result<bool>;
+    /// Skips block with known block size in header
+    fn skip_block(&mut self, header_size: usize) -> Result<bool>;
     /// Returns current tape (`ear`) bit
     fn current_bit(&self) -> bool;
     /// Perform tape processing emulation within `clocks` time limit

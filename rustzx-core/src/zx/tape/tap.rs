@@ -129,6 +129,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tap<A> {
         Ok(true)
     }
 
+    fn skip_block(&mut self, header_size: usize) -> Result<bool> {
+        Ok(true)
+    }
+
     fn current_bit(&self) -> bool {
         self.curr_bit
     }
