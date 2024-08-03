@@ -15,6 +15,9 @@ impl TapeImpl for Empty {
         Ok(false)
     }
 
+    fn skip_block(&mut self, header_size: usize) -> Result<bool> {
+        Ok(false)
+    }
     fn current_bit(&self) -> bool {
         false
     }
