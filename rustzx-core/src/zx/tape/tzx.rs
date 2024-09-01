@@ -39,6 +39,7 @@ enum TapeState {
 // Tzx block id's are in hex
 #[derive(Debug, Clone, Copy)]
 pub enum TzxBlockId {
+    Unknown = 0x0,
     StandardSpeedData = 0x10,
     TurboSpeedData = 0x11,
     PureTone = 0x12,
@@ -119,10 +120,11 @@ pub struct Tzx<A: LoadableAsset + SeekableAsset> {
     bits_to_process_in_byte: usize,
     loop_start_marker: usize,
     num_repetitions: Option<u16>,
+    is_48k_mode: bool,
 }
 
 impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
-    pub fn from_asset(asset: A) -> Result<Self> {
+    pub fn from_asset(asset: A, is48k: bool) -> Result<Self> {
         let tzx = Self {
             prev_state: TapeState::Stop,
             state: TapeState::Init,
@@ -141,6 +143,7 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
             bits_to_process_in_byte: 0,
             loop_start_marker: 0,
             num_repetitions: None,
+            is_48k_mode: is48k,
         };
         Ok(tzx)
     }
@@ -183,8 +186,7 @@ impl<A: LoadableAsset + SeekableAsset> Tzx<A> {
 
 impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
     fn can_fast_load(&self) -> bool {
-        false
-        //self.state == TapeState::Stop
+        self.state == TapeState::Stop
     }
 
     fn next_block_byte(&mut self) -> Result<Option<u8>> {
@@ -403,27 +405,19 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_size = Some(block_size);
                 return Ok(true);
             }
-            0x18 => {
-                println!("CSW Recording - Skipping.");
+            0x16 | 0x17 | 0x18 | 0x19 | 0x2b => {
+                println!("Unsupported block");
                 let mut block_header = [0u8; 4];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let block_size = u32::from_le_bytes(block_header) as usize;
-                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
-                if self
-                    .asset
-                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
-                    .is_err()
-                {
-                    self.tape_ended = true;
-                    return Ok(false);
-                }
-                self.current_block_id = Some(TzxBlockId::CswRecording);
+                let block_size = u32::from_le_bytes(block_header) as isize;
+                self.asset.seek(SeekFrom::Current(block_size))?;
+                self.current_block_id = Some(TzxBlockId::Unknown);
                 return Ok(true);
             }
-            0x19 | 0x16 | 0x17 | 0x34 | 0x35 | 0x40 => {
+            0x34 | 0x35 | 0x40 => {
                 println!("Ignoring deprecated block.");
             }
             0x20 => {
@@ -506,17 +500,23 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let block_size = u16::from_le_bytes(block_header) as usize;
-                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
-                if self
-                    .asset
-                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
-                    .is_err()
-                {
+                let block_size = u16::from_le_bytes(block_header) as isize;
+                self.asset.seek(SeekFrom::Current(block_size))?;
+                self.current_block_id = Some(TzxBlockId::Unknown);
+                return Ok(true);
+            }
+            0x2A => {
+                println!("Stop tape if 48k mode");
+                let mut block_header = [0u8; 4];
+                if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                self.current_block_id = Some(TzxBlockId::SelectBlock);
+                if self.is_48k_mode {
+                    println!("\t48k mode detected!");
+                    return Ok(false);
+                }
+                self.current_block_id = Some(TzxBlockId::StopIf48k);
                 return Ok(true);
             }
             0x30 => {
@@ -549,13 +549,9 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let block_size = u16::from_le_bytes(block_header) as usize;
-                println!("\tBlock_size: {}", block_size);
-                let block_bytes_to_read = block_size.min(BUFFER_SIZE);
-                self.asset
-                    .read_exact(&mut self.buffer[0..block_bytes_to_read])?;
-                self.current_block_size = Some(block_size);
-                self.current_block_id = Some(TzxBlockId::ArchiveInfo);
+                let block_size = u16::from_le_bytes(block_header) as isize;
+                self.asset.seek(SeekFrom::Current(block_size))?;
+                self.current_block_id = Some(TzxBlockId::Unknown);
                 return Ok(true);
             }
             _ => {
@@ -567,9 +563,6 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
         Ok(true)
     }
 
-    fn skip_block(&mut self, header_size: usize) -> Result<bool> {
-        Ok(true)
-    }
     fn current_bit(&self) -> bool {
         self.curr_bit
     }
@@ -615,8 +608,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 TapeState::Stop => {
                     // Reset tape but leave in Stopped state
-                    //self.rewind()?;
-                    println!("Stopped Tape");
+                    println!("Stopped Tape.");
                     self.state = TapeState::Stop;
                     break 'state_machine;
                 }
@@ -863,6 +855,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 }
                 TzxBlockId::GroupEnd => {
                     self.delay = 0;
+                    self.state = TapeState::Play;
+                }
+                TzxBlockId::Unknown | TzxBlockId::StopIf48k => {
+                    println!("\tSkipping block");
                     self.state = TapeState::Play;
                 }
                 _ => {

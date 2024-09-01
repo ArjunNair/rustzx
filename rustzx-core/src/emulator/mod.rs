@@ -140,7 +140,9 @@ impl<H: Host> Emulator<H> {
             }
             Tape::Tzx(asset) => {
                 println!("Attempting to load TZX");
-                self.controller.tape = Tzx::from_asset(asset)?.into();
+
+                self.controller.tape =
+                    Tzx::from_asset(asset, self.controller.is_48k_mode())?.into();
             }
         }
 
