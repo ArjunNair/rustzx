@@ -410,6 +410,16 @@ impl<H: Host> ZXController<H> {
             }
         }
     }
+
+    /// returns true if the machine is in 48k mode
+    pub(crate) fn is_48k_mode(&self) -> bool {
+        let is_48k_rom = match self.machine {
+            ZXMachine::Sinclair48K if self.memory.get_bank_type(0) == Page::Rom(0) => true,
+            ZXMachine::Sinclair128K if self.memory.get_bank_type(0) == Page::Rom(1) => true,
+            _ => false,
+        };
+        return is_48k_rom;
+    }
 }
 
 impl<H: Host> Z80Bus for ZXController<H> {
