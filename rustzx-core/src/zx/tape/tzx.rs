@@ -4,7 +4,6 @@ use crate::{
     zx::tape::TapeImpl,
     Result,
 };
-use core::str::from_utf8;
 const STD_PILOT_LENGTH: usize = 2168;
 const STD_PILOT_PULSES_HEADER: usize = 8063;
 const STD_PILOT_PULSES_DATA: usize = 3223;
