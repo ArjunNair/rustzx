@@ -396,7 +396,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 //println!("\tBlock size: {}", block_size);
                 if self
                     .asset
-                    .read_exact(&mut self.buffer[0..block_bytes_to_read as usize])
+                    .read_exact(&mut self.buffer[0..block_bytes_to_read])
                     .is_err()
                 {
                     self.tape_ended = true;
@@ -457,8 +457,8 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let text_desc_bytes = &self.buffer[0..num_chars as usize];
-                let text_desc_str = from_utf8(text_desc_bytes).unwrap();
+                //let text_desc_bytes = &self.buffer[0..num_chars as usize];
+                //let text_desc_str = from_utf8(text_desc_bytes).unwrap();
                 //println!("\t{text_desc_str}");
                 self.current_block_id = Some(TzxBlockId::GroupStart);
                 return Ok(true);
@@ -536,11 +536,11 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                     self.tape_ended = true;
                     return Ok(false);
                 }
-                let text_desc_bytes = &self.buffer[0..num_chars as usize];
                 self.current_block_size = Some(num_chars as usize);
-                let text_desc_str = from_utf8(text_desc_bytes).unwrap();
-                //println!("\t{text_desc_str}");
                 self.current_block_id = Some(TzxBlockId::TextDescription);
+                //let text_desc_bytes = &self.buffer[0..num_chars as usize];
+                //let text_desc_str = from_utf8(text_desc_bytes).unwrap();
+                //println!("\t{text_desc_str}");
                 return Ok(true);
             }
             0x32 => {
@@ -593,11 +593,11 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                         .read_exact(&mut header_size_buffer[0..HEADER_SIZE])
                         .is_ok()
                     {
-                        let signature = &header_size_buffer[0..8];
-                        let signature_str = from_utf8(signature).unwrap();
+                        //let signature = &header_size_buffer[0..8];
+                        //let signature_str = from_utf8(signature).unwrap();
                         //println!("Signature: {signature_str}");
-                        let major_version = header_size_buffer[8];
-                        let minor_version = header_size_buffer[9];
+                        //let major_version = header_size_buffer[8];
+                        //let minor_version = header_size_buffer[9];
                         //println!("TZX Version: {major_version}.{minor_version}");
                         self.state = TapeState::Play;
                     } else {

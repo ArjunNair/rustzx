@@ -418,7 +418,7 @@ impl<H: Host> ZXController<H> {
             ZXMachine::Sinclair128K if self.memory.get_bank_type(0) == Page::Rom(1) => true,
             _ => false,
         };
-        return is_48k_rom;
+        is_48k_rom
     }
 }
 
