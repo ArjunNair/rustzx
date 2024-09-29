@@ -144,12 +144,9 @@ impl<H: Host> Emulator<H> {
     pub fn load_tape(&mut self, tape: Tape<H::TapeAsset>) -> Result<()> {
         match tape {
             Tape::Tap(asset) => {
-                println!("Attempting to load TAP");
                 self.controller.tape = Tap::from_asset(asset)?.into();
             }
             Tape::Tzx(asset) => {
-                println!("Attempting to load TZX");
-
                 self.controller.tape =
                     Tzx::from_asset(asset, self.controller.is_48k_mode())?.into();
             }
