@@ -59,6 +59,8 @@ pub enum SnapshotLoadError {
 pub enum SnapshotSaveError {
     /// Save not supported
     NotSupported,
+    /// Provided tzx file is invalid
+    InvalidTzxFile,
 }
 
 #[derive(Debug, Display)]
