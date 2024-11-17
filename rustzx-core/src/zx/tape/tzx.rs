@@ -35,6 +35,7 @@ enum TapeState {
 
 // Tzx block id's are in hex
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum TzxBlockId {
     Unknown = 0x0,
     StandardSpeedData = 0x10,
@@ -49,8 +50,7 @@ pub enum TzxBlockId {
     LoopEnd = 0x25,
     StopIf48k = 0x2a,
     TextDescription = 0x30,
-    /* Unsupported blocks */
-    /*
+    /* Unsupported blocks follow */
     C64RomTypeData = 0x16,   // Deprecated
     C64TurboTapeData = 0x17, // Deprecated
     CswRecording = 0x18,
@@ -67,7 +67,44 @@ pub enum TzxBlockId {
     EmulationInfo = 0x34, // Deprecated
     CustomInfo = 0x35,    // Deprecated
     Snapshot = 0x40,      // Deprecated
-    Glue = 0x5a,*/
+    Glue = 0x5a,
+}
+
+impl From<u8> for TzxBlockId {
+    fn from(num: u8) -> Self {
+        match num {
+            0x10 => TzxBlockId::StandardSpeedData,
+            0x11 => TzxBlockId::TurboSpeedData,
+            0x12 => TzxBlockId::PureTone,
+            0x13 => TzxBlockId::PulseSequence,
+            0x14 => TzxBlockId::PureDataBlock,
+            0x15 => TzxBlockId::DirectRecording,
+            0x16 => TzxBlockId::C64RomTypeData,
+            0x17 => TzxBlockId::C64TurboTapeData,
+            0x18 => TzxBlockId::CswRecording,
+            0x19 => TzxBlockId::GeneralizedData,
+            0x20 => TzxBlockId::PauseOrSilence,
+            0x21 => TzxBlockId::GroupStart,
+            0x22 => TzxBlockId::GroupEnd,
+            0x23 => TzxBlockId::JumpToBlock,
+            0x24 => TzxBlockId::LoopStart,
+            0x25 => TzxBlockId::LoopEnd,
+            0x26 => TzxBlockId::CallSequence,
+            0x27 => TzxBlockId::ReturnFromSequence,
+            0x28 => TzxBlockId::SelectBlock,
+            0x2a => TzxBlockId::StopIf48k,
+            0x2b => TzxBlockId::SetSignalLevel,
+            0x30 => TzxBlockId::TextDescription,
+            0x31 => TzxBlockId::MessageBlock,
+            0x32 => TzxBlockId::ArchiveInfo,
+            0x33 => TzxBlockId::HardwareType,
+            0x34 => TzxBlockId::EmulationInfo,
+            0x35 => TzxBlockId::CustomInfo,
+            0x40 => TzxBlockId::Snapshot,
+            0x5a => TzxBlockId::Glue,
+            _ => TzxBlockId::Unknown,
+        }
+    }
 }
 
 pub struct TapeTimings {
@@ -206,11 +243,11 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
             return Ok(false);
         }
 
-        let block_id = id_size_buffer[0];
+        let block_id = TzxBlockId::from(id_size_buffer[0]);
         self.buffer_offset = 0;
         self.block_bytes_read = 0;
         match block_id {
-            0x10 => {
+            TzxBlockId::StandardSpeedData => {
                 let mut block_header = [0u8; 4];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -232,7 +269,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::StandardSpeedData);
                 self.current_block_size = Some(block_size);
             }
-            0x11 => {
+            TzxBlockId::TurboSpeedData => {
                 let mut block_header = [0u8; 18];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -262,7 +299,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::TurboSpeedData);
                 self.current_block_size = Some(block_size);
             }
-            0x12 => {
+            TzxBlockId::PureTone => {
                 let mut block_header = [0u8; 4];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -276,7 +313,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::PureTone);
                 return Ok(true);
             }
-            0x13 => {
+            TzxBlockId::PulseSequence => {
                 let mut block_header = [0u8; 1];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -291,7 +328,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::PulseSequence);
                 return Ok(true);
             }
-            0x14 => {
+            TzxBlockId::PureDataBlock => {
                 let mut block_header = [0u8; 10];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -314,7 +351,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::PureDataBlock);
                 self.current_block_size = Some(block_size);
             }
-            0x15 => {
+            TzxBlockId::DirectRecording => {
                 let mut block_header = [0u8; 8];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -342,7 +379,11 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_size = Some(block_size);
                 return Ok(true);
             }
-            0x16 | 0x17 | 0x18 | 0x19 | 0x2b => {
+            TzxBlockId::C64RomTypeData
+            | TzxBlockId::C64TurboTapeData
+            | TzxBlockId::CswRecording
+            | TzxBlockId::GeneralizedData
+            | TzxBlockId::SetSignalLevel => {
                 let mut block_header = [0u8; 4];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -353,8 +394,8 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::Unknown);
                 return Ok(true);
             }
-            0x34 | 0x35 | 0x40 => {}
-            0x20 => {
+            TzxBlockId::EmulationInfo | TzxBlockId::CustomInfo | TzxBlockId::Snapshot => {}
+            TzxBlockId::PauseOrSilence => {
                 let mut block_header = [0u8; 2];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -372,7 +413,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::PauseOrSilence);
                 return Ok(true);
             }
-            0x21 => {
+            TzxBlockId::GroupStart => {
                 let mut block_header = [0u8; 1];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -390,11 +431,11 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::GroupStart);
                 return Ok(true);
             }
-            0x22 => {
+            TzxBlockId::GroupEnd => {
                 self.current_block_id = Some(TzxBlockId::GroupEnd);
                 return Ok(true);
             }
-            0x24 => {
+            TzxBlockId::LoopStart => {
                 let mut block_header = [0u8; 2];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -403,7 +444,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.num_repetitions = Some(u16::from_le_bytes(block_header));
                 self.loop_start_marker = self.asset.seek(SeekFrom::Current(0))?;
             }
-            0x25 => {
+            TzxBlockId::LoopEnd => {
                 self.current_block_id = Some(TzxBlockId::LoopEnd);
                 if let Some(mut num_rep) = self.num_repetitions {
                     if num_rep > 0 {
@@ -416,7 +457,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.num_repetitions = None;
                 return Ok(true);
             }
-            0x28 => {
+            TzxBlockId::SelectBlock => {
                 let mut block_header = [0u8; 2];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -427,7 +468,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::Unknown);
                 return Ok(true);
             }
-            0x2A => {
+            TzxBlockId::StopIf48k => {
                 let mut block_header = [0u8; 4];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
@@ -439,7 +480,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::StopIf48k);
                 return Ok(true);
             }
-            0x30 => {
+            TzxBlockId::TextDescription => {
                 let mut num_chars_header = [0u8; 1];
                 if self.asset.read_exact(&mut num_chars_header).is_err() {
                     self.tape_ended = true;
@@ -458,7 +499,7 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
                 self.current_block_id = Some(TzxBlockId::TextDescription);
                 return Ok(true);
             }
-            0x32 => {
+            TzxBlockId::ArchiveInfo => {
                 let mut block_header = [0u8; 2];
                 if self.asset.read_exact(&mut block_header).is_err() {
                     self.tape_ended = true;
