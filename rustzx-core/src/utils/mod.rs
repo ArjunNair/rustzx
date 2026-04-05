@@ -3,6 +3,7 @@
 pub mod screen;
 
 #[derive(Copy, Clone)]
+#[derive(Debug)]
 pub enum EmulationMode {
     FrameCount(usize),
     Max,

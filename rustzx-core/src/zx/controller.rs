@@ -19,6 +19,8 @@ use crate::{
         video::{colors::ZXColor, screen::ZXScreen},
     },
 };
+#[cfg(feature = "std")]
+use alloc::string::String;
 use rustzx_z80::Z80Bus;
 
 #[cfg(feature = "embedded-roms")]
@@ -57,6 +59,10 @@ pub(crate) struct ZXController<H: Host> {
     paging_enabled: bool,
     screen_bank: u8,
     current_port_7ffd: u8,
+    // Last written EAR and MIC output bits (pin 28 of ULA, shared with speaker and EAR socket)
+    // These feed back into bit 6 of the IN read per the Issue 2 model
+    ear_out: bool,
+    mic_out: bool,
     // Z80 module expected controller implementation without errors,
     // so we need to store the internal errors manually. For sake of simplicity,
     // only last error is saved
@@ -124,6 +130,8 @@ impl<H: Host> ZXController<H> {
             paging_enabled: paging,
             screen_bank,
             current_port_7ffd: 0,
+            ear_out: false,
+            mic_out: false,
             last_emulation_error: None,
         };
 
@@ -177,6 +185,12 @@ impl<H: Host> ZXController<H> {
                 page.copy_from_slice(roms::ROM_128K_1);
             }
         }
+    }
+
+    #[cfg(feature = "std")]
+    pub fn load_file_from_path(&mut self, _path: String) {
+        // Path-based loading is not implemented at controller level; the host (e.g. Tauri app)
+        // should use Emulator::load_tape / load_snapshot / load_screen with assets from the path.
     }
 
     /// Changes key state in controller
@@ -470,6 +484,14 @@ impl<H: Host> Z80Bus for ZXController<H> {
         }
         #[cfg(feature = "sound")]
         {
+            // When the tape is playing, its signal drives the speaker directly via
+            // ULA pin 28 (EAR socket shares the same line as the internal speaker).
+            // This is separate from the CPU's EAR/MIC output path; the ROM's OUT
+            // instructions are ignored for audio while the tape is active.
+            if self.tape.is_playing() {
+                let tape_bit = self.tape.current_bit();
+                self.mixer.beeper.change_state(tape_bit, false);
+            }
             let pos = self.frame_pos();
             self.mixer.process(pos);
         }
@@ -526,20 +548,28 @@ impl<H: Host> Z80Bus for ZXController<H> {
                 }
             }
 
-            // Emulate zx spectrum "issue 2" model.
-            // For future "issue 3" implementation condition will be `!self.ear`, but
-            // different zx spectrum "issues" emulation is not planned yet
-            if !self.tape.current_bit() {
+            // Bit 6 of IN reflects the voltage on ULA pin 28 (EAR socket / speaker line).
+            // The logic depends on whether the tape is actively playing:
+            //
+            // Tape playing: the tape pulse signal drives pin 28 directly.
+            //   bit 6 = tape.current_bit()
+            //
+            // Tape stopped: pin 28 is determined by the CPU's last OUT to port 0xFE.
+            //   Issue 2: bit 6 = 1 if either EAR (bit 4) or MIC (bit 3) was written high.
+            //            Both drive pin 28 above the 0.70 V threshold on Issue 2 hardware.
+            //   Issue 3: bit 6 = 1 only if EAR (bit 4) was written high.
+            //            MIC alone (~0.73 V) is insufficient on Issue 3 hardware.
+            //   Issue 3 emulation is not yet implemented.
+            let pin28_high = if self.tape.is_playing() {
+                self.tape.current_bit()
+            } else {
+                // Issue 2 keyboard model
+                self.ear_out || self.mic_out
+            };
+            if !pin28_high {
                 tmp ^= 0x40;
             }
-
-            #[cfg(feature = "sound")]
-            {
-                let mic = tmp & 0x08 != 0;
-                let ear = tmp & 0x10 != 0;
-                self.mixer.beeper.change_state(ear, mic);
-            }
-            // 5 and 7 bits are unused
+            // bits 5 and 7 are unused
             tmp
         } else if self.mouse.is_some() && (port & 0x0121 == 0x0001) {
             self.mouse.as_ref().unwrap().buttons_port
@@ -577,11 +607,18 @@ impl<H: Host> Z80Bus for ZXController<H> {
             self.write_ay_port(data);
         } else if port & 0x0001 == 0 {
             self.set_border_color(self.frame_clocks, ZXColor::from_bits(data & 0x07));
+            // Save EAR (bit 4) and MIC (bit 3) output bits — these drive pin 28 of the
+            // ULA and feed back into bit 6 of the next IN from port 0xFE.
+            // Always saved regardless of tape state (needed for the IN read feedback path).
+            self.ear_out = data & 0x10 != 0;
+            self.mic_out = data & 0x08 != 0;
             #[cfg(feature = "sound")]
             {
-                let mic = data & 0x08 != 0;
-                let ear = data & 0x10 != 0;
-                self.mixer.beeper.change_state(ear, mic);
+                // When the tape is playing, audio is driven from the tape signal in
+                // wait_internal. The ROM's OUT instructions must not override that.
+                if !self.tape.is_playing() {
+                    self.mixer.beeper.change_state(self.ear_out, self.mic_out);
+                }
             }
         } else if (port & 0x8002 == 0) && (self.machine == ZXMachine::Sinclair128K) {
             self.write_7ffd(data);

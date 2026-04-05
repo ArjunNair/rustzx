@@ -97,12 +97,15 @@ pub struct Settings {
     /// Set screen file to load. Only `.scr` files are supported currently
     #[structopt(long, conflicts_with = "file-autodetect")]
     pub screen: Option<PathBuf>,
+    /// Disable egui overlay (SDL-only). Use for simpler loop and potentially better audio
+    #[structopt(long = "nogui")]
+    pub disable_gui: bool,
 
     /// Load provided file to emulator. Emulator will perform autodetect of format if possible
     pub file_autodetect: Option<PathBuf>,
 }
 
-fn machine_from_str(s: &str) -> Result<ZXMachine, anyhow::Error> {
+pub fn machine_from_str(s: &str) -> Result<ZXMachine, anyhow::Error> {
     match s.to_lowercase().as_str() {
         "48k" | "48" => Ok(ZXMachine::Sinclair48K),
         "128k" | "128" => Ok(ZXMachine::Sinclair128K),

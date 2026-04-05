@@ -9,6 +9,7 @@ use rustzx_core::{
             sinclair::{SinclairJoyNum, SinclairKey},
         },
         keys::{CompoundKey, ZXKey},
+        machine::ZXMachine,
         mouse::kempston::{KempstonMouseButton, KempstonMouseWheelDirection},
     },
     EmulationMode,
@@ -16,8 +17,10 @@ use rustzx_core::{
 use std::path::PathBuf;
 
 pub use events_sdl::EventsSdl;
+use sdl2::event::Event as SdlEvent;
 
 // Event type
+#[derive(Debug)]
 pub enum Event {
     ZXKey(ZXKey, bool),
     CompoundKey(CompoundKey, bool),
@@ -34,6 +37,8 @@ pub enum Event {
     QuickSave,
     QuickLoad,
     OpenFile(PathBuf),
+    Reset,
+    ChangeMachine(String),
     Exit,
 }
 

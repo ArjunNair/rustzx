@@ -9,17 +9,17 @@ pub use video_sdl::VideoSdl;
 /// Texture id binging
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub struct TextureInfo {
-    id: usize,
-    width: u32,
-    height: u32,
+    pub id: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Simple rect struct
 pub struct Rect {
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
 }
 
 impl Rect {
@@ -43,4 +43,11 @@ pub trait VideoDevice {
     fn draw_texture_2d(&mut self, tex: TextureInfo, rect: Option<Rect>);
     /// finishes rendering
     fn end(&mut self);
+    /// Get a reference to the SDL2 window (for egui integration)
+    fn window(&self) -> &sdl2::video::Window;
+    /// Make the OpenGL context current (needed before egui operations)
+    /// Default implementation does nothing (for backends that don't use OpenGL)
+    fn make_gl_context_current(&self) {
+        // Default: no-op
+    }
 }

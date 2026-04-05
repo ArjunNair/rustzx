@@ -19,6 +19,10 @@ impl TapeImpl for Empty {
         false
     }
 
+    fn is_playing(&self) -> bool {
+        false
+    }
+
     fn process_clocks(&mut self, _clocks: usize) -> Result<()> {
         Ok(())
     }

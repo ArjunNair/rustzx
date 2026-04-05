@@ -189,6 +189,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tzx<A> {
         self.state == TapeState::Stop
     }
 
+    fn is_playing(&self) -> bool {
+        !matches!(self.state, TapeState::Stop | TapeState::Init)
+    }
+
     fn next_block_byte(&mut self) -> Result<Option<u8>> {
         if self.tape_ended {
             return Ok(None);

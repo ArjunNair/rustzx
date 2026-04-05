@@ -5,22 +5,28 @@
 use crate::{
     app::{
         events::{Event, EventDevice, EventsSdl},
-        settings::{Settings, SoundBackend},
+        settings::{machine_from_str, Settings, SoundBackend},
         sound::{SoundDevice, DEFAULT_SAMPLE_RATE},
         video::{Rect, TextureInfo, VideoDevice, VideoSdl},
     },
     host::{self, AppHost, AppHostContext, DetectedFileKind},
 };
+#[cfg(feature = "gui")]
+use crate::app::gui::GuiContext;
 use anyhow::{anyhow, Context};
 use rustzx_core::{
     host::SnapshotRecorder,
-    zx::constants::{
-        CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_X, CANVAS_Y, FPS, SCREEN_HEIGHT, SCREEN_WIDTH,
+    zx::{
+        constants::{
+            CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_X, CANVAS_Y, FPS, SCREEN_HEIGHT, SCREEN_WIDTH,
+        },
+        machine::ZXMachine,
     },
     Emulator,
 };
 use rustzx_utils::io::FileAsset;
 use std::{
+    collections::VecDeque,
     fs::{self, File},
     path::{Path, PathBuf},
     thread,
@@ -35,6 +41,12 @@ fn frame_length(fps: usize) -> Duration {
     Duration::from_millis((1000_f64 / fps as f64) as u64)
 }
 
+pub enum AppState {
+    Running,
+    Paused,
+    Exit,
+}
+
 /// Application instance type
 pub struct RustzxApp {
     /// main emulator object
@@ -42,7 +54,7 @@ pub struct RustzxApp {
     /// Sound rendering in a separate thread
     snd: Option<Box<dyn SoundDevice>>,
     video: Box<dyn VideoDevice>,
-    events: Box<dyn EventDevice>,
+    events: EventsSdl,
     tex_border: TextureInfo,
     tex_canvas: TextureInfo,
     scale: u32,
@@ -50,6 +62,10 @@ pub struct RustzxApp {
 
     enable_frame_trace: bool,
     enable_joy_keyaboard_layer: bool,
+    #[cfg(feature = "gui")]
+    gui: Option<GuiContext>,
+    app_events: VecDeque<Event>,
+    app_state: AppState,
 }
 
 impl RustzxApp {
@@ -68,7 +84,7 @@ impl RustzxApp {
         let tex_border = video.gen_texture(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32);
         let tex_canvas = video.gen_texture(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
         let scale = settings.scale as u32;
-        let events = Box::new(EventsSdl::new(&settings));
+        let events = EventsSdl::new(&settings);
         let sample_rate = snd
             .as_ref()
             .map(|s| s.sample_rate())
@@ -100,6 +116,14 @@ impl RustzxApp {
 
         let file_autodetect = settings.file_autodetect.clone();
 
+        #[cfg(feature = "gui")]
+        let gui = if !settings.disable_gui {
+            video.make_gl_context_current();
+            Some(GuiContext::new(video.window()))
+        } else {
+            None
+        };
+
         let mut app = RustzxApp {
             emulator,
             snd,
@@ -109,8 +133,12 @@ impl RustzxApp {
             tex_canvas,
             scale,
             settings,
-            enable_frame_trace: cfg!(debug_assertions),
+            enable_frame_trace: false, /*cfg!(debug_assertions)*/
             enable_joy_keyaboard_layer: false,
+            #[cfg(feature = "gui")]
+            gui,
+            app_events: VecDeque::new(),
+            app_state: AppState::Running,
         };
 
         if let Some(file) = file_autodetect.as_ref() {
@@ -136,9 +164,79 @@ impl RustzxApp {
         self.video.set_title(&title);
     }
 
+    fn handle_events(&mut self, event: crate::app::events::Event) -> anyhow::Result<AppState> {
+        let mut app_state = AppState::Running;
+        log::debug!("Handling event: {:?}", event);
+        match event {
+            Event::Exit => {
+                app_state = AppState::Exit;
+            }
+            Event::ZXKey(key, state) => {
+                self.emulator.send_key(key, state);
+            }
+            Event::SwitchFrameTrace => {
+                self.enable_frame_trace = !self.enable_frame_trace;
+                self.update_window_title();
+            }
+            Event::ChangeJoyKeyboardLayer(value) => {
+                self.enable_joy_keyaboard_layer = value;
+                self.update_window_title();
+            }
+            Event::ChangeSpeed(speed) => {
+                self.emulator.set_speed(speed);
+            }
+            Event::Kempston(key, state) => {
+                self.emulator.send_kempston_key(key, state);
+            }
+            Event::Sinclair(num, key, state) => {
+                self.emulator.send_sinclair_key(num, key, state);
+            }
+            Event::CompoundKey(key, state) => {
+                self.emulator.send_compound_key(key, state);
+            }
+            Event::MouseMove { x, y } => {
+                self.emulator.send_mouse_pos_diff(x, y);
+            }
+            Event::MouseButton(button, pressed) => {
+                self.emulator.send_mouse_button(button, pressed);
+            }
+            Event::MouseWheel(direction) => {
+                self.emulator.send_mouse_wheel(direction);
+            }
+            Event::InsertTape => self.emulator.play_tape(),
+            Event::StopTape => self.emulator.stop_tape(),
+            Event::OpenFile(path) => self.load_file_autodetect(&path)?,
+            Event::QuickSave => self.quick_save()?,
+            Event::QuickLoad => self.quick_load()?,
+            Event::Reset => self.reset_emulation(),
+            Event::ChangeMachine(machine) => self.change_machine(machine.as_str()),
+        }
+        Ok(app_state)
+    }
+
+    // TBD: Remove this!
+    pub fn change_machine(&mut self, machine: &str) {
+        self.settings.machine = machine_from_str(machine).unwrap();
+        self.emulator = Emulator::new(
+            self.settings
+                .to_rustzx_settings(self.settings.sound_sample_rate.unwrap()),
+            AppHostContext,
+        )
+        .map_err(|e| anyhow!("Failed to construct emulator: {}", e))
+        .unwrap();
+
+        self.emulator.reset();
+    }
+
+    pub fn reset_emulation(&mut self) {
+        self.emulator.reset();
+    }
+
     pub fn start(&mut self) -> anyhow::Result<()> {
         let scale = self.scale;
+        let mut frame_count: u64 = 0;
         'emulator: loop {
+            frame_count = frame_count.wrapping_add(1);
             let frame_target_dt = frame_length(FPS);
             // absolute start time
             let frame_start = Instant::now();
@@ -148,9 +246,8 @@ impl RustzxApp {
                 .emulate_frames(MAX_FRAME_TIME)
                 .map_err(|e| anyhow!("Emulation step failed: {:#?}", e))?
                 .duration;
-            // if sound enabled sound ganeration allowed then move samples to sound thread
+            // Match others: only move samples to sound when sound is enabled (normal speed)
             if let Some(ref mut snd) = self.snd {
-                // if can be turned off even on speed change, so check it everytime
                 if self.emulator.have_sound() {
                     while let Some(sample) = self.emulator.next_audio_sample() {
                         snd.send_sample(sample);
@@ -163,6 +260,8 @@ impl RustzxApp {
             self.video
                 .update_texture(self.tex_canvas, self.emulator.screen_buffer().rgba_data());
 
+            // Ensure OpenGL context is current before rendering
+            self.video.make_gl_context_current();
             self.video.begin();
             self.video.draw_texture_2d(
                 self.tex_border,
@@ -182,57 +281,107 @@ impl RustzxApp {
                     CANVAS_HEIGHT as u32 * scale,
                 )),
             );
-            self.video.end();
-            // check all events
-            while let Some(event) = self.events.pop_event() {
-                match event {
-                    Event::Exit => {
+
+            #[cfg(feature = "gui")]
+            let run_gui_block = self.gui.is_some();
+
+            #[cfg(feature = "gui")]
+            if run_gui_block {
+                // DON'T call video.end() yet - render egui first, then swap buffers
+                let mut sdl_events = Vec::new();
+                let mut f1_pressed = false;
+                let mut f2_pressed = false;
+
+                while let Some(sdl_event) = self.events.poll_raw_event() {
+                    if let sdl2::event::Event::KeyDown {
+                        keycode: Some(k), ..
+                    } = &sdl_event
+                    {
+                        if *k == sdl2::keyboard::Keycode::F1 {
+                            f1_pressed = true;
+                        } else if *k == sdl2::keyboard::Keycode::F2 {
+                            f2_pressed = true;
+                        }
+                    }
+                    sdl_events.push(sdl_event);
+                }
+
+                let run_egui = !self.emulator.have_sound()
+                    || std::env::var("RUSTZX_EGUI_WITH_SOUND").as_deref() == Ok("1");
+
+                if run_egui {
+                    if let Some(ref mut gui) = self.gui {
+                        let window = self.video.window();
+                        self.video.make_gl_context_current();
+                        if f1_pressed {
+                            gui.show_settings = !gui.show_settings;
+                        }
+                        if f2_pressed {
+                            gui.show_demo = !gui.show_demo;
+                        }
+                        for sdl_event in &sdl_events {
+                            gui.egui_integration.handle_event(window, sdl_event);
+                        }
+                        gui.egui_integration.begin_frame(window);
+                        let ctx = gui.egui_integration.context();
+                        gui.render(&ctx);
+                        let full_output = gui.egui_integration.end_frame(window);
+                        if let Some(path) = gui.picked_file.take() {
+                            self.app_events
+                                .push_back(Event::OpenFile(path.to_path_buf()));
+                        }
+                        gui.egui_integration.paint(window, full_output);
+                    }
+                }
+
+                self.video.end();
+
+                for sdl_event in &sdl_events {
+                    if let Some(event) = self.events.sdl_event_to_emulator_event(sdl_event) {
+                        let app_state = self.handle_events(event)?;
+                        if let AppState::Exit = app_state {
+                            break 'emulator;
+                        }
+                        self.app_state = app_state;
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "gui"))]
+            {
+                self.video.end();
+                while let Some(event) = self.events.pop_event() {
+                    let app_state = self.handle_events(event)?;
+                    if let AppState::Exit = app_state {
                         break 'emulator;
                     }
-                    Event::ZXKey(key, state) => {
-                        self.emulator.send_key(key, state);
-                    }
-                    Event::SwitchFrameTrace => {
-                        self.enable_frame_trace = !self.enable_frame_trace;
-                        self.update_window_title();
-                    }
-                    Event::ChangeJoyKeyboardLayer(value) => {
-                        self.enable_joy_keyaboard_layer = value;
-                        self.update_window_title();
-                    }
-                    Event::ChangeSpeed(speed) => {
-                        self.emulator.set_speed(speed);
-                    }
-                    Event::Kempston(key, state) => {
-                        self.emulator.send_kempston_key(key, state);
-                    }
-                    Event::Sinclair(num, key, state) => {
-                        self.emulator.send_sinclair_key(num, key, state);
-                    }
-                    Event::CompoundKey(key, state) => {
-                        self.emulator.send_compound_key(key, state);
-                    }
-                    Event::MouseMove { x, y } => {
-                        self.emulator.send_mouse_pos_diff(x, y);
-                    }
-                    Event::MouseButton(button, pressed) => {
-                        self.emulator.send_mouse_button(button, pressed);
-                    }
-                    Event::MouseWheel(direction) => {
-                        self.emulator.send_mouse_wheel(direction);
-                    }
-                    Event::InsertTape => self.emulator.play_tape(),
-                    Event::StopTape => self.emulator.stop_tape(),
-                    Event::OpenFile(path) => self.load_file_autodetect(&path)?,
-                    Event::QuickSave => self.quick_save()?,
-                    Event::QuickLoad => self.quick_load()?,
+                    self.app_state = app_state;
                 }
+            }
+
+            #[cfg(feature = "gui")]
+            if !run_gui_block {
+                self.video.end();
+                while let Some(event) = self.events.pop_event() {
+                    let app_state = self.handle_events(event)?;
+                    if let AppState::Exit = app_state {
+                        break 'emulator;
+                    }
+                    self.app_state = app_state;
+                }
+            }
+
+            while let Some(event) = self.app_events.pop_front() {
+                let app_state = self.handle_events(event)?;
+                if let AppState::Exit = app_state {
+                    break 'emulator;
+                }
+                self.app_state = app_state;
             }
             // how long emulation iteration was
             let emulation_dt = frame_start.elapsed();
             if emulation_dt < frame_target_dt {
                 let wait_koef = if self.emulator.have_sound() { 9 } else { 10 };
-                // sleep until frame sync
                 thread::sleep((frame_target_dt - emulation_dt) * wait_koef / 10);
             };
             // get exceed clocks and use them on next iteration

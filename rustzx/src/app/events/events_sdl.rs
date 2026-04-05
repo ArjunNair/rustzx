@@ -30,6 +30,8 @@ pub struct EventsSdl {
     enable_joy_keyaboard_layer: bool,
     mouse_x_counter: i32,
     mouse_y_counter: i32,
+    /// Queue of events that were processed by egui but not consumed
+    event_queue: std::collections::VecDeque<sdl2::event::Event>,
 }
 
 impl EventsSdl {
@@ -58,6 +60,7 @@ impl EventsSdl {
             mouse_sensitivity: settings.mouse_sensitivity,
             mouse_x_counter: 0,
             mouse_y_counter: 0,
+            event_queue: std::collections::VecDeque::new(),
         }
     }
 
@@ -236,97 +239,129 @@ impl EventsSdl {
     }
 }
 
+impl EventsSdl {
+    /// Queue an SDL event for processing (used by egui integration)
+    pub fn queue_event(&mut self, event: sdl2::event::Event) {
+        self.event_queue.push_back(event);
+    }
+    
+    /// Process an SDL event that was already handled by egui
+    /// Converts SDL event to emulator event
+    fn process_sdl_event(&mut self, event: &sdl2::event::Event) -> Option<Event> {
+        match event {
+            // exit requested
+            SdlEvent::Quit { .. } => Some(Event::Exit),
+            // if any key pressed
+            action @ SdlEvent::KeyDown { .. } | action @ SdlEvent::KeyUp { .. } => {
+                // assemble tuple from scancode and its state
+                let (scancode, pressed) = match action {
+                    SdlEvent::KeyDown { scancode: code, .. } => (code, true),
+                    SdlEvent::KeyUp { scancode: code, .. } => (code, false),
+                    _ => unreachable!(),
+                };
+
+                // Form highest priority event to lowest
+                self.scancode_to_emulator_event(*scancode, pressed)
+                    .or_else(|| self.scancode_to_kempston_event(*scancode, pressed))
+                    .or_else(|| self.scancode_to_sinclair_event(*scancode, pressed))
+                    .or_else(|| self.scancode_to_zxkey_event(*scancode, pressed))
+                    .or_else(|| self.scancode_to_compound_key_event(*scancode, pressed))
+            }
+            SdlEvent::MouseMotion { xrel, yrel, .. } => {
+                // Change of direction  requires counter reset to eliminate lag
+                let xrel = *xrel;
+                let yrel = *yrel;
+                if self.mouse_x_counter.signum() != xrel.signum() {
+                    self.mouse_x_counter = xrel;
+                } else {
+                    self.mouse_x_counter += xrel;
+                }
+                if self.mouse_y_counter.signum() != yrel.signum() {
+                    self.mouse_y_counter = yrel;
+                } else {
+                    self.mouse_y_counter += yrel;
+                }
+
+                // Depending on sensitivity, different distance is required to move
+                // kempston mouse
+                let ticks_to_move =
+                    sensitivity_to_mouse_counter_ticks(self.mouse_sensitivity) as i32;
+                let xshift = self.mouse_x_counter / ticks_to_move;
+                let yshift = self.mouse_y_counter / ticks_to_move;
+                let xrem = self.mouse_x_counter % ticks_to_move;
+                let yrem = self.mouse_y_counter % ticks_to_move;
+                if xshift != 0 {
+                    self.mouse_x_counter = xrem;
+                }
+                if yshift != 0 {
+                    self.mouse_y_counter = yrem;
+                }
+
+                if self.mouse_locked {
+                    let x = xshift.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+                    let y = yshift.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+                    Some(Event::MouseMove { x, y })
+                } else {
+                    None
+                }
+            }
+            SdlEvent::MouseButtonDown { mouse_btn, .. } => {
+                self.lock_mouse();
+                if self.mouse_locked {
+                    sdl_mouse_button_to_kempston(*mouse_btn)
+                        .map(|button| Event::MouseButton(button, true))
+                } else {
+                    None
+                }
+            }
+            SdlEvent::MouseButtonUp { mouse_btn, .. } => {
+                if self.mouse_locked {
+                    sdl_mouse_button_to_kempston(*mouse_btn)
+                        .map(|button| Event::MouseButton(button, false))
+                } else {
+                    None
+                }
+            }
+            SdlEvent::MouseWheel { y, .. } => {
+                if self.mouse_locked {
+                    if *y > 0 {
+                        Some(Event::MouseWheel(KempstonMouseWheelDirection::Up))
+                    } else {
+                        Some(Event::MouseWheel(KempstonMouseWheelDirection::Down))
+                    }
+                } else {
+                    None
+                }
+            }
+            SdlEvent::DropFile { filename, .. } => Some(Event::OpenFile(filename.into())),
+            _ => None,
+        }
+    }
+}
+
+impl EventsSdl {
+    /// Poll a raw SDL event (for egui processing)
+    pub fn poll_raw_event(&mut self) -> Option<sdl2::event::Event> {
+        self.event_pump.poll_event()
+    }
+    
+    /// Convert a raw SDL event to an emulator event
+    pub fn sdl_event_to_emulator_event(&mut self, event: &sdl2::event::Event) -> Option<Event> {
+        self.process_sdl_event(event)
+    }
+}
+
 impl EventDevice for EventsSdl {
     /// get last event
     fn pop_event(&mut self) -> Option<Event> {
+        // First check if there are queued events
+        if let Some(event) = self.event_queue.pop_front() {
+            return self.process_sdl_event(&event);
+        }
+        
+        // Otherwise poll from event pump
         if let Some(event) = self.event_pump.poll_event() {
-            // if event found
-            match event {
-                // exot requested
-                SdlEvent::Quit { .. } => Some(Event::Exit),
-                // if any key pressed
-                action @ SdlEvent::KeyDown { .. } | action @ SdlEvent::KeyUp { .. } => {
-                    // assemble tuple from scancode and its state
-                    let (scancode, pressed) = match action {
-                        SdlEvent::KeyDown { scancode: code, .. } => (code, true),
-                        SdlEvent::KeyUp { scancode: code, .. } => (code, false),
-                        _ => unreachable!(),
-                    };
-
-                    // Form highest priority event to lowest
-                    self.scancode_to_emulator_event(scancode, pressed)
-                        .or_else(|| self.scancode_to_kempston_event(scancode, pressed))
-                        .or_else(|| self.scancode_to_sinclair_event(scancode, pressed))
-                        .or_else(|| self.scancode_to_zxkey_event(scancode, pressed))
-                        .or_else(|| self.scancode_to_compound_key_event(scancode, pressed))
-                }
-                SdlEvent::MouseMotion { xrel, yrel, .. } => {
-                    // Change of direction  requires counter reset to eliminate lag
-                    if self.mouse_x_counter.signum() != xrel.signum() {
-                        self.mouse_x_counter = xrel;
-                    } else {
-                        self.mouse_x_counter += xrel;
-                    }
-                    if self.mouse_y_counter.signum() != yrel.signum() {
-                        self.mouse_y_counter = yrel;
-                    } else {
-                        self.mouse_y_counter += yrel;
-                    }
-
-                    // Depending on sensitivity, different distance is required to move
-                    // kempston mouse
-                    let ticks_to_move =
-                        sensitivity_to_mouse_counter_ticks(self.mouse_sensitivity) as i32;
-                    let xshift = self.mouse_x_counter / ticks_to_move;
-                    let yshift = self.mouse_y_counter / ticks_to_move;
-                    let xrem = self.mouse_x_counter % ticks_to_move;
-                    let yrem = self.mouse_y_counter % ticks_to_move;
-                    if xshift != 0 {
-                        self.mouse_x_counter = xrem;
-                    }
-                    if yshift != 0 {
-                        self.mouse_y_counter = yrem;
-                    }
-
-                    if self.mouse_locked {
-                        let x = xshift.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-                        let y = yshift.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-                        Some(Event::MouseMove { x, y })
-                    } else {
-                        None
-                    }
-                }
-                SdlEvent::MouseButtonDown { mouse_btn, .. } => {
-                    self.lock_mouse();
-                    if self.mouse_locked {
-                        sdl_mouse_button_to_kempston(mouse_btn)
-                            .map(|button| Event::MouseButton(button, true))
-                    } else {
-                        None
-                    }
-                }
-                SdlEvent::MouseButtonUp { mouse_btn, .. } => {
-                    if self.mouse_locked {
-                        sdl_mouse_button_to_kempston(mouse_btn)
-                            .map(|button| Event::MouseButton(button, false))
-                    } else {
-                        None
-                    }
-                }
-                SdlEvent::MouseWheel { y, .. } => {
-                    if self.mouse_locked {
-                        if y > 0 {
-                            Some(Event::MouseWheel(KempstonMouseWheelDirection::Up))
-                        } else {
-                            Some(Event::MouseWheel(KempstonMouseWheelDirection::Down))
-                        }
-                    } else {
-                        None
-                    }
-                }
-                SdlEvent::DropFile { filename, .. } => Some(Event::OpenFile(filename.into())),
-                _ => None,
-            }
+            self.process_sdl_event(&event)
         } else {
             None
         }

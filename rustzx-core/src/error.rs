@@ -1,3 +1,4 @@
+use alloc::string::String;
 use displaydoc::Display;
 use from_variants::FromVariants;
 
@@ -33,6 +34,10 @@ pub enum IoError {
 pub enum RomLoadError {
     /// More assets required to load rom
     MoreAssetsRequired,
+    /// Loading from path is not supported in core; the host must load the asset and call load_tape
+    PathLoadingNotSupported,
+    /// Unsupported file extension for load
+    UnsupportedFileExtension(String),
 }
 
 #[derive(Debug, Display)]

@@ -1,4 +1,4 @@
-//! Real Audio SDL backend
+//! Real Audio CPAL backend
 use crate::app::{
     settings::Settings,
     sound::{ringbuf_size_from_sample_rate, SoundDevice, ZXSample, CHANNEL_COUNT},
@@ -9,11 +9,10 @@ use std::sync::Arc;
 pub struct SoundCpal {
     tx: ringbuf::Producer<ZXSample, Arc<ringbuf::HeapRb<ZXSample>>>,
     sample_rate: usize,
-    // Keep stream alive until Drop
     _stream: cpal::Stream,
 }
+
 impl SoundCpal {
-    /// Constructs sound backend from settings
     pub fn new(settings: &Settings) -> anyhow::Result<SoundCpal> {
         let host = cpal::default_host();
         let device = host
@@ -30,7 +29,6 @@ impl SoundCpal {
                         return false;
                     }
                 }
-
                 // Find any stereo config
                 (c.channels() as usize % CHANNEL_COUNT == 0) && c.channels() != 0
             })
@@ -51,19 +49,17 @@ impl SoundCpal {
         let (tx, rx) = ringbuf.split();
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::I16 => create_stream::<i16>(&device, &config.into(), rx)?,
-            cpal::SampleFormat::U16 => create_stream::<u16>(&device, &config.into(), rx)?,
-            cpal::SampleFormat::F32 => create_stream::<f32>(&device, &config.into(), rx)?,
             cpal::SampleFormat::I8 => create_stream::<i8>(&device, &config.into(), rx)?,
+            cpal::SampleFormat::I16 => create_stream::<i16>(&device, &config.into(), rx)?,
             cpal::SampleFormat::I32 => create_stream::<i32>(&device, &config.into(), rx)?,
             cpal::SampleFormat::I64 => create_stream::<i64>(&device, &config.into(), rx)?,
             cpal::SampleFormat::U8 => create_stream::<u8>(&device, &config.into(), rx)?,
+            cpal::SampleFormat::U16 => create_stream::<u16>(&device, &config.into(), rx)?,
             cpal::SampleFormat::U32 => create_stream::<u32>(&device, &config.into(), rx)?,
             cpal::SampleFormat::U64 => create_stream::<u64>(&device, &config.into(), rx)?,
+            cpal::SampleFormat::F32 => create_stream::<f32>(&device, &config.into(), rx)?,
             cpal::SampleFormat::F64 => create_stream::<f64>(&device, &config.into(), rx)?,
-            _ => {
-                anyhow::bail!("Device has unsupported audio sample format")
-            }
+            _ => anyhow::bail!("Device has unsupported audio sample format"),
         };
 
         Ok(SoundCpal {
@@ -101,18 +97,15 @@ where
             for frame in out.chunks_mut(channels) {
                 match samples_rx.pop() {
                     Some(zx_sample) => {
-                        let left: T = cpal::Sample::from_sample(zx_sample.left);
-                        let right: T = cpal::Sample::from_sample(zx_sample.right);
-                        frame[0] = left;
-                        frame[1] = right;
+                        frame[0] = cpal::Sample::from_sample(zx_sample.left);
+                        frame[1] = cpal::Sample::from_sample(zx_sample.right);
                     }
                     None => {
                         frame[0] = cpal::Sample::EQUILIBRIUM;
                         frame[1] = cpal::Sample::EQUILIBRIUM;
                     }
                 }
-
-                // We use only first stereo channels, other channels should be silent
+                // Silence any extra channels beyond stereo
                 frame[2..channels].fill(cpal::Sample::EQUILIBRIUM);
             }
         },

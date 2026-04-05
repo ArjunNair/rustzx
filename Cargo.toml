@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "aym",
-    "rustzx-core",
-    "rustzx-test",
-    "rustzx-utils",
-    "rustzx-z80",
-    "rustzx",
-    "vtx",
-    "vtx/vtx-bin",
+  "aym",
+  "rustzx-core",
+  "rustzx-test",
+  "rustzx-utils",
+  "rustzx-z80",
+  "rustzx",
+  "vtx",
+  "vtx/vtx-bin",
 ]
 resolver = "2"
 
@@ -15,10 +15,11 @@ resolver = "2"
 version = "0.16.0"
 license = "MIT"
 edition = "2021"
-authors = ["The RustZX contributors", "Vladyslav Nikonov <mail@pacmancoder.xyz>"]
+authors = [
+  "The RustZX contributors",
+  "Vladyslav Nikonov <mail@pacmancoder.xyz>",
+]
 repository = "https://github.com/rustzx/rustzx"
-
-
 
 
 [workspace.dependencies]

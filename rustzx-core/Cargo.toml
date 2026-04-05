@@ -11,6 +11,7 @@ repository.workspace = true
 
 [features]
 default = []
+std = []
 full = ["ay", "precise-border", "embedded-roms", "autoload", "strum", "zlib"]
 precise-border = []
 embedded-roms = []

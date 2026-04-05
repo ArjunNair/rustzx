@@ -133,6 +133,10 @@ impl<A: LoadableAsset + SeekableAsset> TapeImpl for Tap<A> {
         self.curr_bit
     }
 
+    fn is_playing(&self) -> bool {
+        self.state != TapeState::Stop
+    }
+
     fn process_clocks(&mut self, clocks: usize) -> Result<()> {
         if self.state == TapeState::Stop {
             return Ok(());

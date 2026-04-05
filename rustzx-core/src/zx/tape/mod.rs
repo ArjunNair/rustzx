@@ -36,6 +36,10 @@ pub trait TapeImpl {
     fn next_block(&mut self) -> Result<bool>;
     /// Returns current tape (`ear`) bit
     fn current_bit(&self) -> bool;
+    /// Returns true if the tape is actively playing (generating a signal).
+    /// When false, bit 6 of port 0xFE is determined by the CPU's last
+    /// written EAR/MIC output rather than the tape signal.
+    fn is_playing(&self) -> bool;
     /// Perform tape processing emulation within `clocks` time limit
     fn process_clocks(&mut self, clocks: usize) -> Result<()>;
     fn process_current_block(&mut self) -> Result<()>;

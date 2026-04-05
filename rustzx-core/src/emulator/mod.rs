@@ -5,7 +5,7 @@ mod screenshot;
 mod snapshot;
 
 use crate::{
-    error::RomLoadError,
+    error::{Error, RomLoadError},
     host::{
         DataRecorder, Host, LoadableAsset, RomFormat, RomSet, Screen, ScreenAsset, Snapshot,
         SnapshotAsset, SnapshotRecorder, Stopwatch, Tape,
@@ -90,6 +90,35 @@ impl<H: Host> Emulator<H> {
         Ok(this)
     }
 
+    pub fn reset(&mut self) {
+        self.cpu.regs.set_sp(0xffff);
+        self.cpu.regs.set_iy(0xffff);
+        self.cpu.regs.set_ix(0xffff);
+        self.cpu.regs.set_af(0xffff);
+        self.cpu.regs.set_bc(0xffff);
+        self.cpu.regs.set_de(0xffff);
+        self.cpu.regs.set_hl(0xffff);
+
+        self.cpu.regs.exx();
+        self.cpu.regs.swap_af_alt();
+
+        self.cpu.regs.set_af(0xffff);
+        self.cpu.regs.set_bc(0xffff);
+        self.cpu.regs.set_de(0xffff);
+        self.cpu.regs.set_hl(0xffff);
+
+        self.cpu.regs.set_iff1(false);
+        self.cpu.regs.set_iff2(false);
+
+        self.cpu.regs.set_mem_ptr(0);
+        self.cpu.regs.clear_q();
+        self.cpu.regs.step_q();
+
+        self.cpu.regs.set_pc(0);
+        self.cpu.regs.set_i(0);
+        self.cpu.regs.set_r(0);
+    }
+
     /// changes emulation speed
     pub fn set_speed(&mut self, new_speed: EmulationMode) {
         self.mode = new_speed;
@@ -163,6 +192,12 @@ impl<H: Host> Emulator<H> {
         }
 
         Ok(())
+    }
+
+    /// Load a tape or similar from a file path. Path-based loading is not implemented in core;
+    /// the host must open the asset and call `load_tape` with a `Tape<H::TapeAsset>`.
+    pub fn load_file_from_path(&mut self, _path: alloc::string::String) -> Result<()> {
+        Err(Error::RomLoad(RomLoadError::PathLoadingNotSupported))
     }
 
     fn load_rom_binary_16k_pages(&mut self, mut rom: impl RomSet) -> Result<()> {

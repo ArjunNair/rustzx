@@ -51,10 +51,7 @@ impl SoundSdl {
         let audio = audio_subsystem
             .ok_or_else(|| anyhow::anyhow!("Failed to initialize SDL audio backend"))?;
 
-        // Basically, SDL shits its pants if desired sound sample rate is not specified
         let sample_rate = settings.sound_sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE);
-
-        // SDL sets awfully big latency by default
         let latency = settings.sound_latency.unwrap_or(DEFAULT_LATENCY);
 
         let desired_spec = AudioSpecDesired {
@@ -65,7 +62,6 @@ impl SoundSdl {
         let ringbuf_size = ringbuf_size_from_sample_rate(sample_rate);
         let ringbuf = ringbuf::HeapRb::<ZXSample>::new(ringbuf_size);
         let (tx, rx) = ringbuf.split();
-
         let device_handle = audio
             .open_playback(None, &desired_spec, |_| SdlCallback { samples: rx })
             .map_err(|e| anyhow::anyhow!("Failed to start SDL sound stream: {}", e))?;
@@ -81,7 +77,7 @@ impl SoundSdl {
 
 impl SoundDevice for SoundSdl {
     fn send_sample(&mut self, sample: ZXSample) {
-        // Ignore sample push errors
+        // Ignore buffer overflows
         let _ = self.sender.push(sample);
     }
 

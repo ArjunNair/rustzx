@@ -1,6 +1,7 @@
 /// Kempston key type. Port bit encoded in enum values
 #[cfg_attr(feature = "strum", derive(strum::EnumIter))]
 #[derive(Clone, Copy)]
+#[derive(Debug)]
 pub enum KempstonKey {
     Right = 0x01,
     Left = 0x02,
