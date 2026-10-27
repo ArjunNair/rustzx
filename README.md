@@ -12,6 +12,10 @@ ZX Spectrum emulator written in Rust.
 - Watch [this](https://youtu.be/Xho3GWFyP2I) video showcase (`v0.9.x`)
 - Read [CHANGELOG.md](CHANGELOG.md) for info on the latest version changes
 
+<br> 
+<b>NOTE:* This is a fork of the original rustzx project, where I previously added SZX snapshot and MemPtr/WZ support. I had also added support for the very popular TZX tape format but that never got merged into the original project, so I've added it here.
+</b>- <i>Arjun</i>
+
 ## Features
 - Written in pure rust
 - Cross-platform
@@ -21,6 +25,7 @@ ZX Spectrum emulator written in Rust.
 - Beeper sound emulation
 - Supported formats:
     - `tap` - tape
+    - 'tzx' - tape
     - `sna` - snapshot, both 48K and 128K versions supported
     - `szx` - snapshot, both 48k and 128k versions supported along with
         zlib compression.
